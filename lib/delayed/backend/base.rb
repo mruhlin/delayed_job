@@ -18,7 +18,8 @@ module Delayed
     
           priority = args.first || 25
           run_at   = args[1]
-          self.create(:payload_object => object, :priority => priority.to_i, :run_at => run_at)
+          queue    = args[2] || nil
+          self.create(:payload_object => object, :priority => priority.to_i, :run_at => run_at, :queue => queue)
         end
         
         # Hook method that is called before a new worker is forked
