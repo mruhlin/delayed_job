@@ -29,6 +29,7 @@ module Delayed
           {:conditions => ['(run_at <= ? AND (locked_at IS NULL OR locked_at < ?) OR locked_by = ?) AND failed_at IS NULL', db_time_now, db_time_now - max_run_time, worker_name]}
         }
         named_scope :by_priority, :order => 'priority ASC, run_at ASC'
+        named_scope :failing, :conditions => "last_error is not null"
         
         def self.after_fork
           ::ActiveRecord::Base.connection.reconnect!

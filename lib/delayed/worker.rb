@@ -1,4 +1,3 @@
-require 'timeout'
 require 'active_support/core_ext/numeric/time'
 
 module Delayed
@@ -7,23 +6,23 @@ module Delayed
     self.sleep_delay = 5
     self.max_attempts = 25
     self.max_run_time = 4.hours
-    
+
     # By default failed jobs are destroyed after too many attempts. If you want to keep them around
     # (perhaps to inspect the reason for the failure), set this to false.
     cattr_accessor :destroy_failed_jobs
     self.destroy_failed_jobs = true
-    
+
     self.logger = if defined?(Merb::Logger)
-      Merb.logger
-    elsif defined?(RAILS_DEFAULT_LOGGER)
-      RAILS_DEFAULT_LOGGER
-    end
+                    Merb.logger
+                  elsif defined?(Rails.logger)
+                    Rails.logger
+                  end
 
     # name_prefix is ignored if name is set directly
     attr_accessor :name_prefix
-    
+
     cattr_reader :backend
-    
+
     def self.backend=(backend)
       if backend.is_a? Symbol
         require "delayed/backend/#{backend}"
@@ -32,16 +31,16 @@ module Delayed
       @@backend = backend
       silence_warnings { ::Delayed.const_set(:Job, backend) }
     end
-    
+
     def self.guess_backend
       self.backend ||= if defined?(ActiveRecord)
-        :active_record
-      elsif defined?(MongoMapper)
-        :mongo_mapper
-      else
-        logger.warn "Could not decide on a backend, defaulting to active_record"
-        :active_record
-      end
+                         :active_record
+                       elsif defined?(MongoMapper)
+                         :mongo_mapper
+                       else
+                         logger.warn "Could not decide on a backend, defaulting to active_record"
+                         :active_record
+                       end
     end
 
     def initialize(options={})
@@ -68,9 +67,18 @@ module Delayed
     def start
       say "*** Starting job worker #{name}"
 
-      trap('TERM') { say 'Exiting...'; $exit = true }
-      trap('INT')  { say 'Exiting...'; $exit = true }
+      # Have the loggers flush the buffer after every message, otherwise
+      # log messages can be lost when the forked worker process exits.
+      # Only matters for production where the rails buffered logger
+      # has auto_flushing set to 1000 by default.
+      Rails.logger.auto_flushing = true if Rails.logger.respond_to?(:auto_flushing=)
+      Delayed::Worker.logger.auto_flushing = true if Delayed::Worker.logger.respond_to?(:auto_flushing=)
 
+      trap('TERM') { say 'Exiting...'; $exit = true }
+      trap('INT') { say 'Exiting...'; $exit = true }
+
+      #[terry] perf
+      #PerfTools::CpuProfiler.start("/tmp/dj-#{Process.pid}") do
       loop do
         result = nil
 
@@ -90,11 +98,24 @@ module Delayed
 
         break if $exit
       end
+        #end #[terry] perf
 
     ensure
       Delayed::Job.clear_locks!(name)
     end
-    
+
+    def forked!
+      # Reseed RNG after fork - see [SA-9726] & https://www.ruby-forum.com/topic/970111
+      srand
+      ActiveRecord::Base.connection.reconnect!
+      Rails.cache.instance_variable_get(:@data).reset
+      Mongoid.config.master.connection.close
+      load File.join(RAILS_ROOT, 'config/initializers/mongoid.rb')
+
+      # Ensure the worker re-populates the guid bucket so that guids are not reused
+      UUID.send(:class_variable_get, :@@guid_bucket).try(:clear)
+    end
+
     # Do num jobs and return stats on success/failure.
     # Exit early if interrupted.
     def work_off(num = 100)
@@ -102,32 +123,57 @@ module Delayed
 
       num.times do
         case reserve_and_run_one_job
-        when true
+          when true
             success += 1
-        when false
+          when false
             failure += 1
-        else
-          break  # leave if no work could be done
+          else
+            break # leave if no work could be done
         end
         break if $exit # leave if we're exiting
       end
 
       return [success, failure]
     end
-    
+
     def run(job)
-      runtime =  Benchmark.realtime do
-        Timeout.timeout(self.class.max_run_time.to_i) { job.invoke_job }
-        job.destroy
+      success = false
+      runtime = Benchmark.realtime do
+        begin
+          if ENV['nofork']
+            invoke_job(job)
+            success = true
+          else
+            fork do
+              forked!
+              begin
+                invoke_job(job)
+              rescue Exception => e
+                handle_failed_job(job, e)
+                Kernel.exit!(1) # work failed
+              end
+              Kernel.exit!(0)
+            end
+            Process.wait
+            raise "Forked worker process exited abnormally" if !$?.exited?
+            success = ($?.exitstatus == 0)
+          end
+        rescue Exception => e
+          handle_failed_job(job, e)
+        end
       end
       # TODO: warn if runtime > max_run_time ?
       say "* [JOB] #{name} completed after %.4f" % runtime
-      return true  # did work
-    rescue Exception => e
-      handle_failed_job(job, e)
-      return false  # work failed
+      success
     end
-    
+
+    def invoke_job(job)
+      SchoolAdmin::Delayed.with_current_job(job) do
+        Timeout.timeout(self.class.max_run_time.to_i) { job.invoke_job }
+      end
+      job.destroy
+    end
+
     # Reschedule the job in the future (when a job fails).
     # Uses an exponential scale depending on the number of failed attempts.
     def reschedule(job, time = nil)
@@ -153,14 +199,15 @@ module Delayed
       logger.add level, "#{Time.now.strftime('%FT%T%z')}: #{text}" if logger
     end
 
-  protected
-    
+    protected
+
     def handle_failed_job(job, error)
       job.last_error = error.message + "\n" + error.backtrace.join("\n")
       say "* [JOB] #{name} failed with #{error.class.name}: #{error.message} - #{job.attempts} failed attempts", Logger::ERROR
+      EdgeCaseAlert.alert(:canonical_name => "dj_faile", :body => "DJ Job (id:#{job.id}) FAILED! #{error.message}")
       reschedule(job)
     end
-    
+
     # Run the next job we can get an exclusive lock on.
     # If no jobs are left we return nil
     def reserve_and_run_one_job
@@ -177,6 +224,7 @@ module Delayed
         end
       end
 
+      System.reset_current_customer!
       run(job) if job
     end
   end

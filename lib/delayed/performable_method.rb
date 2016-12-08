@@ -1,6 +1,10 @@
 class Class
-  def load_for_delayed_job(arg)
-    self
+  def load_for_delayed_job(id)
+    if id && self.respond_to?(:find)
+      find(id)
+    else
+      self
+    end
   end
   
   def dump_for_delayed_job
@@ -10,7 +14,9 @@ end
 
 module Delayed
   class PerformableMethod < Struct.new(:object, :method, :args)
-    STRING_FORMAT = /^LOAD\;([A-Z][\w\:]+)(?:\;(\w+))?$/
+    #STRING_FORMAT = /^LOAD\;([A-Z][\w\:]+)(?:\;(\w+))?$/
+    #[terry] allow dashes for guids
+    STRING_FORMAT = /^LOAD\;([A-Z][\w\:]+)(?:\;([\w\-]+))?$/
     
     class LoadError < StandardError
     end
@@ -32,13 +38,35 @@ module Delayed
     end
     
     def perform
-      load(object).send(method, *args.map{|a| load(a)})
+      if customer.nil?
+        loaded_object.send(method, *loaded_args)
+      else
+        System.with_customer(customer) do
+          loaded_object.send(method, *loaded_args)
+        end
+      end
     rescue PerformableMethod::LoadError
       # We cannot do anything about objects that can't be loaded
       true
     end
 
+    def customer
+      return @customer if defined?(@customer)
+      entity = ([loaded_object] + loaded_args).detect { |o| o.respond_to?(:customer_id) && o.try(:customer_id) }
+      @customer = entity ? Customer.find_by_id(entity.customer_id) : nil
+    rescue PerformableMethod::LoadError
+      nil
+    end
+
     private
+
+    def loaded_object
+      @loaded_object ||= load(object)
+    end
+
+    def loaded_args
+      @loaded_args ||= args.map { |a| load(a) }
+    end
 
     def load(obj)
       if STRING_FORMAT === obj
