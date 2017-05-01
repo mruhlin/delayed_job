@@ -17,7 +17,7 @@ module Delayed
     #STRING_FORMAT = /^LOAD\;([A-Z][\w\:]+)(?:\;(\w+))?$/
     #[terry] allow dashes for guids
     STRING_FORMAT = /^LOAD\;([A-Z][\w\:]+)(?:\;([\w\-]+))?$/
-    
+
     class LoadError < StandardError
     end
 
@@ -65,7 +65,7 @@ module Delayed
     end
 
     def loaded_args
-      @loaded_args ||= args.map { |a| load(a) }
+      @loaded_args ||= (args.present? ? args.map { |a| load(a) } : [])
     end
 
     def load(obj)
