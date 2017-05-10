@@ -1,9 +1,12 @@
 module Delayed
   module MessageSending
     def send_later(method, *args)
+      run_at = nil
+
       if args.last.is_a?(Hash)
         priority = args.last.delete(:priority)
         queue = args.last.delete(:queue)
+        run_at = args.last.delete(:run_at)
         if args.last.empty?
           args.pop
         end
@@ -15,16 +18,20 @@ module Delayed
       if defined?($SYNC) && $SYNC
         send(method, *args)
       else
-        job = Delayed::Job.enqueue(Delayed::PerformableMethod.new(self, method.to_sym, args), priority, nil, queue)
+        job = Delayed::Job.enqueue(Delayed::PerformableMethod.new(self, method.to_sym, args), priority, run_at, queue)
         SchoolAdmin::Delayed.log_job_queued(job)
         job
       end
     end
 
     def send_at(time, method, *args)
-      job = Delayed::Job.enqueue(Delayed::PerformableMethod.new(self, method.to_sym, args), 0, time, nil)
-      SchoolAdmin::Delayed.log_job_queued(job)
-      job
+      if defined?($SYNC) && $SYNC
+        send(method, *args)
+      else
+        job = Delayed::Job.enqueue(Delayed::PerformableMethod.new(self, method.to_sym, args), 0, time, nil)
+        SchoolAdmin::Delayed.log_job_queued(job)
+        job
+      end
     end
 
     module ClassMethods
