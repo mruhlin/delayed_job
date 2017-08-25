@@ -47,7 +47,10 @@ module Delayed
           scope = scope.scoped(:conditions => ['priority <= ?', Worker.max_priority]) if Worker.max_priority
 
           if Worker.queue
-            scope = scope.scoped(:conditions => ['queue = ?', Worker.queue])
+            # "__all__" for an unconstrained query, e.g. all queues
+            if Worker.queue.strip.downcase != '__all__'
+              scope = scope.scoped(:conditions => ['queue = ?', Worker.queue])
+            end
           else
             scope = scope.scoped(:conditions => ['queue is NULL'])
           end
