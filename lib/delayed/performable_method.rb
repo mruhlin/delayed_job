@@ -75,7 +75,6 @@ module Delayed
         obj
       end
     rescue => e
-      Delayed::Worker.logger.warn "Could not load object for job: #{e.message}"
       raise PerformableMethod::LoadError
     end
 
