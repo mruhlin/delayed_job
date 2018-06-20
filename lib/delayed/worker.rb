@@ -110,8 +110,7 @@ module Delayed
       srand
       ActiveRecord::Base.connection.reconnect!
       Rails.cache.instance_variable_get(:@data).reset
-      Mongoid.config.master.connection.close
-      load File.join(RAILS_ROOT, 'config/initializers/mongoid.rb')
+      Mongoid.default_session.disconnect
 
       # Ensure the worker re-populates the guid bucket so that guids are not reused
       UUID.send(:class_variable_get, :@@guid_bucket).try(:clear)
