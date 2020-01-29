@@ -204,7 +204,11 @@ module Delayed
     def handle_failed_job(job, error)
       job.last_error = error.message + "\n" + error.backtrace.join("\n")
       say "* [JOB] #{name} failed with #{error.class.name}: #{error.message} - #{job.attempts} failed attempts", Logger::ERROR
-      EdgeCaseAlert.alert(:canonical_name => "dj_faile", :body => "DJ Job (id:#{job.id}) FAILED! #{error.message}")
+      EdgeCaseAlert.alert(
+        canonical_name: "dj_failed",
+        body: "DJ Job (id:#{job.id}) FAILED! #{error.message}",
+        exception: error
+      )
       reschedule(job)
     end
 
